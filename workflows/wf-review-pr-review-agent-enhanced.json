@@ -301,14 +301,14 @@
     },
     "Is Automated Review?": {
       "main": [
+        [],
         [
           {
             "node": "Repo Config Lookup",
             "type": "main",
             "index": 0
           }
-        ],
-        []
+        ]
       ]
     },
     "Repo Config Lookup": {
