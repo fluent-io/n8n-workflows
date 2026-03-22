@@ -15,8 +15,7 @@
         "path": "github-review",
         "responseMode": "responseNode",
         "options": {}
-      },
-      "webhookId": "a14c7fba-1064-4663-853c-a3dba82e83db"
+      }
     },
     {
       "id": "a1b2c3d4-0001-0001-0001-000000000002",
@@ -62,7 +61,7 @@
           "options": {
             "caseSensitive": true,
             "leftValue": "",
-            "typeValidation": "strict"
+            "typeValidation": "loose"
           },
           "conditions": [
             {
@@ -386,5 +385,6 @@
     "executionOrder": "v1",
     "callerPolicy": "workflowsFromSameOwner",
     "availableInMCP": false
-  }
+  },
+  "staticData": null
 }
