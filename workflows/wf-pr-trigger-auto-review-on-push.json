@@ -45,7 +45,7 @@
         400
       ],
       "parameters": {
-        "jsCode": "const body = $input.first().json.body;\nconst action = body.action;\nconst pr = body.pull_request;\nconst repo = body.repository ? body.repository.full_name : null;\n\n// Only handle synchronize and opened\nif (!['synchronize', 'opened'].includes(action)) {\n  return [{ json: { skip: true, reason: `Action '${action}' not handled` } }];\n}\n\nif (!pr) {\n  return [{ json: { skip: true, reason: 'No PR in payload' } }];\n}\n\n// Only trigger for configured repos\nconst ALLOWED_REPOS = ['fluent-io/getonit'];\nif (!ALLOWED_REPOS.includes(repo)) {\n  return [{ json: { skip: true, reason: `Repo not configured: ${repo}` } }];\n}\n\n// Skip draft PRs\nif (pr.draft) {\n  return [{ json: { skip: true, reason: 'Draft PR' } }];\n}\n\n// Skip PRs not targeting main\nif (pr.base.ref !== 'main') {\n  return [{ json: { skip: true, reason: `Base branch is ${pr.base.ref}, not main` } }];\n}\n\nreturn [{\n  json: {\n    skip: false,\n    prNumber: String(pr.number),\n    prTitle: pr.title,\n    headSha: pr.head.sha,\n    repo,\n    action\n  }\n}];"
+        "jsCode": "const body = $input.first().json.body;\nconst action = body.action;\nconst pr = body.pull_request;\nconst repo = body.repository ? body.repository.full_name : null;\n\nif (![\"synchronize\", \"opened\"].includes(action)) {\n  return [{ json: { skip: true, reason: \"Action not handled: \" + action } }];\n}\nif (!pr) return [{ json: { skip: true, reason: \"No PR in payload\" } }];\nconst ALLOWED_REPOS = [\"fluent-io/getonit\"];\nif (!ALLOWED_REPOS.includes(repo)) return [{ json: { skip: true, reason: \"Repo not configured: \" + repo } }];\nif (pr.draft) return [{ json: { skip: true, reason: \"Draft PR\" } }];\nif (pr.base.ref !== \"main\") return [{ json: { skip: true, reason: \"Base branch is \" + pr.base.ref } }];\n\nreturn [{ json: { skip: false, prNumber: String(pr.number), prTitle: pr.title, headSha: pr.head.sha, repo, action } }];"
       }
     },
     {
@@ -84,8 +84,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        940,
-        320
+        1660,
+        220
       ],
       "parameters": {
         "method": "POST",
@@ -94,13 +94,103 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"ref\": \"main\",\n  \"inputs\": {\n    \"pr_number\": \"{{ $json.prNumber }}\",\n    \"attempt\": \"1\",\n    \"prior_issues\": \"[]\"\n  }\n}",
+        "jsonBody": "={\n  \"ref\": \"main\",\n  \"inputs\": {\n    \"pr_number\": \"{{ $json.prNumber }}\",\n    \"attempt\": \"{{ $json.attempt }}\",\n    \"prior_issues\": {{ $json.prior_issues }}\n  }\n}",
         "options": {}
       },
       "credentials": {
         "httpHeaderAuth": {
           "id": "RfjQF27PtHxdDYRS",
           "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "id": "prt-006",
+      "name": "Get Retry State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        940,
+        320
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT retry_count, last_issues FROM pr_retries WHERE repo = '{{ $json.repo }}' AND pr_number = {{ $json.prNumber }} LIMIT 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "3f0cd129-1670-48db-9ebf-b4488e01c735",
+          "name": "n8n Postgres (pr_retries)"
+        }
+      }
+    },
+    {
+      "id": "prt-007",
+      "name": "Decide Attempt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        320
+      ],
+      "parameters": {
+        "jsCode": "const prData = $(\"Should Dispatch?\").first().json;\nconst retryRows = $input.all();\nconst MAX_ATTEMPTS = 5;\n\nlet retryCount = 0;\nlet lastIssues = \"[]\";\n\nif (retryRows.length > 0 && retryRows[0].json && retryRows[0].json.retry_count != null) {\n  retryCount = Number(retryRows[0].json.retry_count);\n  lastIssues = retryRows[0].json.last_issues || \"[]\";\n}\n\nconst attempt = retryCount + 1;\nconst escalate = attempt > MAX_ATTEMPTS;\n\nreturn [{ json: { ...prData, attempt: String(attempt), prior_issues: lastIssues, escalate, retryCount } }];"
+      }
+    },
+    {
+      "id": "prt-009",
+      "name": "At Ceiling?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.escalate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "prt-008",
+      "name": "Escalate to Victor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1660,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.27.0.4:18789/hooks/agent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"agentId\": \"victorpa\",\n  \"message\": \"PR #{{ $json.prNumber }} ({{ $json.repo }}) has failed review {{ $json.retryCount }} times. Builder agent is stuck. Review manually: https://github.com/{{ $json.repo }}/pull/{{ $json.prNumber }}\",\n  \"wakeMode\": \"now\",\n  \"deliver\": true\n}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X2T2E4b6hmgjv1dg",
+          "name": "OpenClaw Webhook Token"
         }
       }
     }
@@ -139,12 +229,52 @@
       "main": [
         [
           {
-            "node": "Dispatch PR Review Workflow",
+            "node": "Get Retry State",
             "type": "main",
             "index": 0
           }
         ],
         []
+      ]
+    },
+    "Get Retry State": {
+      "main": [
+        [
+          {
+            "node": "Decide Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Attempt": {
+      "main": [
+        [
+          {
+            "node": "At Ceiling?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "At Ceiling?": {
+      "main": [
+        [
+          {
+            "node": "Escalate to Victor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dispatch PR Review Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
