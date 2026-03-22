@@ -1,0 +1,390 @@
+{
+  "name": "WF-Review: PR Review \u2192 Agent (Enhanced)",
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000001",
+      "name": "GitHub Review Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-review",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "a14c7fba-1064-4663-853c-a3dba82e83db"
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000002",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        460,
+        180
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "ok",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000003",
+      "name": "Parse Review Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        380
+      ],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst review = body.review;\nconst pr = body.pull_request;\nconst repo = body.repository.full_name;\n\n// Only process 'submitted' action\nif (body.action !== 'submitted') {\n  return [{ json: { skip: true } }];\n}\n\n// Parse machine-readable reviewer result\nconst match = review.body && review.body.match(/<!--\\s*reviewer-result:\\s*({.*?})\\s*-->/s);\nif (!match) {\n  return [{ json: { skip: true, reason: 'no reviewer-result comment \u2014 human review' } }];\n}\n\nlet result;\ntry {\n  result = JSON.parse(match[1]);\n} catch(e) {\n  return [{ json: { skip: true, reason: 'failed to parse reviewer-result JSON' } }];\n}\n\nreturn [{\n  json: {\n    skip: false,\n    repo,\n    prNumber: pr.number,\n    prTitle: pr.title,\n    headSha: pr.head.sha,\n    prNodeId: pr.node_id,\n    status: result.status,\n    attempt: result.attempt || 1,\n    blocking: result.blocking || [],\n    advisory: result.advisory || [],\n    reviewId: review.id\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000004",
+      "name": "Is Automated Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        380
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000005",
+      "name": "Repo Config Lookup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const REPO_CONFIG = {\n  'fluent-io/getonit': {\n    agentId: 'getonit',\n    delivery: { channel: 'discord', to: 'channel:1477347170200846577' },\n    maxRetries: 3,\n    victorWhatsApp: '+15615043303'\n  }\n};\n\nconst repo = $input.first().json.repo;\nconst config = REPO_CONFIG[repo];\n\nif (!config) {\n  return [{ json: { ...$input.first().json, skip: true, reason: `No config for repo: ${repo}` } }];\n}\n\nreturn [{ json: { ...$input.first().json, config } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000006",
+      "name": "FAIL or PASS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "FAIL",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000007",
+      "name": "Track Retry Count",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1420,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO pr_retries (repo, pr_number, retry_count, last_issues, last_review_sha)\nVALUES ('{{ $json.repo }}', {{ $json.prNumber }}, 1, '{{ JSON.stringify($json.blocking) }}', '{{ $json.headSha }}')\nON CONFLICT (repo, pr_number) DO UPDATE\n  SET retry_count = pr_retries.retry_count + 1,\n      last_issues = '{{ JSON.stringify($json.blocking) }}',\n      last_review_sha = '{{ $json.headSha }}',\n      updated_at = NOW()\nRETURNING retry_count;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "3f0cd129-1670-48db-9ebf-b4488e01c735",
+          "name": "n8n Postgres (pr_retries)"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000008",
+      "name": "Max Retries Hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Track Retry Count').first().json.retry_count }}",
+              "rightValue": "={{ $('Repo Config Lookup').first().json.config.maxRetries }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000009",
+      "name": "Wake Agent (FAIL)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://openclaw-victor:18789/hooks/agent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"agentId\": \"{{ $('Repo Config Lookup').first().json.config.agentId }}\",\n  \"message\": \"Review FAILED: {{ $('Parse Review Result').first().json.repo }}#{{ $('Parse Review Result').first().json.prNumber }} (attempt {{ $('Track Retry Count').first().json.retry_count }}) \u2014 {{ $('Parse Review Result').first().json.blocking.length }} blocking issue(s). Push fixes to trigger re-review.\",\n  \"wakeMode\": \"now\",\n  \"deliver\": true,\n  \"channel\": \"{{ $('Repo Config Lookup').first().json.config.delivery.channel }}\",\n  \"to\": \"{{ $('Repo Config Lookup').first().json.config.delivery.to }}\"\n}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X2T2E4b6hmgjv1dg",
+          "name": "OpenClaw Webhook Token"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000010",
+      "name": "Notify Victor (Escalate)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://openclaw-victor:18789/hooks/agent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"agentId\": \"victorpa\",\n  \"message\": \"\u26a0\ufe0f PR review escalated: {{ $('Parse Review Result').first().json.repo }}#{{ $('Parse Review Result').first().json.prNumber }} failed {{ $('Track Retry Count').first().json.retry_count }} times. Blocking: {{ $('Parse Review Result').first().json.blocking.map(b => b.issue).join('; ') }}. Bypass review or suggest a fix.\",\n  \"wakeMode\": \"now\",\n  \"deliver\": true\n}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "X2T2E4b6hmgjv1dg",
+          "name": "OpenClaw Webhook Token"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000011",
+      "name": "Enable Auto-Merge (PASS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/graphql",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": \"mutation EnableAutoMerge($prId: ID!) { enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: SQUASH }) { pullRequest { autoMergeRequest { enabledAt } } } }\",\n  \"variables\": { \"prId\": \"{{ $('Parse Review Result').first().json.prNodeId }}\" }\n}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "RfjQF27PtHxdDYRS",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0001-000000000012",
+      "name": "Reset Retries (PASS)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1660,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE pr_retries SET retry_count = 0, last_issues = NULL WHERE repo = '{{ $('Parse Review Result').first().json.repo }}' AND pr_number = {{ $('Parse Review Result').first().json.prNumber }};",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "3f0cd129-1670-48db-9ebf-b4488e01c735",
+          "name": "n8n Postgres (pr_retries)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "GitHub Review Webhook": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Parse Review Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Review Result": {
+      "main": [
+        [
+          {
+            "node": "Is Automated Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Automated Review?": {
+      "main": [
+        [
+          {
+            "node": "Repo Config Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Repo Config Lookup": {
+      "main": [
+        [
+          {
+            "node": "FAIL or PASS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAIL or PASS?": {
+      "main": [
+        [
+          {
+            "node": "Track Retry Count",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enable Auto-Merge (PASS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Track Retry Count": {
+      "main": [
+        [
+          {
+            "node": "Max Retries Hit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Max Retries Hit?": {
+      "main": [
+        [
+          {
+            "node": "Notify Victor (Escalate)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wake Agent (FAIL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enable Auto-Merge (PASS)": {
+      "main": [
+        [
+          {
+            "node": "Reset Retries (PASS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  }
+}

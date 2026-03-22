@@ -1,0 +1,156 @@
+{
+  "name": "WF-PR-Trigger: Auto-Review on Push",
+  "nodes": [
+    {
+      "id": "prt-001",
+      "name": "GitHub PR Push Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-pr-push",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "c9a1f2b3-4d5e-6f7a-8b9c-0d1e2f3a4b5c"
+    },
+    {
+      "id": "prt-002",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        460,
+        180
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "ok",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "prt-003",
+      "name": "Extract and Filter PR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        400
+      ],
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst action = body.action;\nconst pr = body.pull_request;\nconst repo = body.repository ? body.repository.full_name : null;\n\n// Only handle synchronize and opened\nif (!['synchronize', 'opened'].includes(action)) {\n  return [{ json: { skip: true, reason: `Action '${action}' not handled` } }];\n}\n\nif (!pr) {\n  return [{ json: { skip: true, reason: 'No PR in payload' } }];\n}\n\n// Only trigger for configured repos\nconst ALLOWED_REPOS = ['fluent-io/getonit'];\nif (!ALLOWED_REPOS.includes(repo)) {\n  return [{ json: { skip: true, reason: `Repo not configured: ${repo}` } }];\n}\n\n// Skip draft PRs\nif (pr.draft) {\n  return [{ json: { skip: true, reason: 'Draft PR' } }];\n}\n\n// Skip PRs not targeting main\nif (pr.base.ref !== 'main') {\n  return [{ json: { skip: true, reason: `Base branch is ${pr.base.ref}, not main` } }];\n}\n\nreturn [{\n  json: {\n    skip: false,\n    prNumber: String(pr.number),\n    prTitle: pr.title,\n    headSha: pr.head.sha,\n    repo,\n    action\n  }\n}];"
+      }
+    },
+    {
+      "id": "prt-004",
+      "name": "Should Dispatch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "prt-005",
+      "name": "Dispatch PR Review Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        320
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/fluent-io/getonit/actions/workflows/249014797/dispatches",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"ref\": \"main\",\n  \"inputs\": {\n    \"pr_number\": \"{{ $json.prNumber }}\",\n    \"attempt\": \"1\",\n    \"prior_issues\": \"[]\"\n  }\n}",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "RfjQF27PtHxdDYRS",
+          "name": "GitHub Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "GitHub PR Push Webhook": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract and Filter PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract and Filter PR": {
+      "main": [
+        [
+          {
+            "node": "Should Dispatch?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Dispatch?": {
+      "main": [
+        [
+          {
+            "node": "Dispatch PR Review Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  }
+}
